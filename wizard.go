@@ -114,13 +114,13 @@ func generateJunkCode() string {
 
 	var sb strings.Builder
 
-	for i := range varCount {
+	for i := 0; i < varCount; i++ {
 		varName := fmt.Sprintf("__var_%s_%d", generateRandomString(CharsetAlphaNumeric, 8, false), i)
 		value := rng.Intn(100000)
 		sb.WriteString(fmt.Sprintf("let %s = %d; ", varName, value))
 	}
 
-	for i := range funcCount {
+	for i := 0; i < funcCount; i++ {
 		funcName := fmt.Sprintf("__Func_%s_%d", generateRandomString(CharsetAlphaNumeric, 8, false), i)
 		ret := rng.Intn(1000)
 		sb.WriteString(fmt.Sprintf("function %s() { return %d; } ", funcName, ret))
@@ -300,54 +300,6 @@ func openURL(url string) error {
 }
 
 func checkBPBPanel(url string) error {
-	// ticker := time.NewTicker(5 * time.Second)
-	// defer ticker.Stop()
-
-	// dialer := &net.Dialer{
-	// 	Resolver: &net.Resolver{
-	// 		PreferGo: true,
-	// 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-	// 			d := net.Dialer{
-	// 				Timeout: time.Duration(5000) * time.Millisecond,
-	// 			}
-
-	// 			return d.DialContext(ctx, "udp", "8.8.8.8:53")
-	// 		},
-	// 	},
-	// }
-
-	// dialContext := func(ctx context.Context, network, addr string) (net.Conn, error) {
-	// 	conn, err := dialer.DialContext(ctx, network, addr)
-	// 	if err != nil {
-	// 		return nil, err
-	// 	}
-	// 	return conn, nil
-	// }
-
-	// transport := &http.Transport{
-	// 	DisableKeepAlives: true,
-	// 	DialContext:       dialContext,
-	// }
-
-	// client := &http.Client{
-	// 	Transport: transport,
-	// 	Timeout:   15 * time.Second,
-	// }
-
-	// for range ticker.C {
-	// 	resp, err := client.Get(url)
-	// 	if err != nil {
-	// 		fmt.Printf(".")
-	// 		continue
-	// 	}
-
-	// 	if resp.StatusCode != http.StatusOK {
-	// 		fmt.Printf(".")
-	// 		resp.Body.Close()
-	// 		continue
-	// 	}
-
-	// 	resp.Body.Close()
 	message := fmt.Sprintf("BPB panel is ready -> %s", fmtStr(url, BLUE, true))
 	successMessage(message)
 	prompt := fmt.Sprintf("- Would you like to open %s in browser? (y/n): ", fmtStr("BPB panel", BLUE, true))
@@ -361,9 +313,6 @@ func checkBPBPanel(url string) error {
 	}
 
 	return nil
-	// }
-
-	// return nil
 }
 
 func runWizard() {
@@ -373,13 +322,22 @@ func runWizard() {
 	fmt.Printf("%s Please make sure you have a verified %s account.\n", info, fmtStr("Cloudflare", ORANGE, true))
 
 	for {
-		message := fmt.Sprintf("1- %s a new panel.\n2- %s an existing panel.\n\n- Select: ", fmtStr("CREATE", GREEN, true), fmtStr("MODIFY", RED, true))
-		response := promptUser(message, []string{"1", "2"})
+		message := fmt.Sprintf("1- %s a new panel.\n2- %s an existing panel.\n3- %s (Auto).\n4- %s (Auto).\n\n- Select: ", 
+			fmtStr("CREATE", GREEN, true), 
+			fmtStr("MODIFY", RED, true),
+			fmtStr("WORKERS INSTALL", BLUE, true),
+			fmtStr("PAGES INSTALL", ORANGE, true))
+
+		response := promptUser(message, []string{"1", "2", "3", "4"})
 		switch response {
 		case "1":
 			createPanel()
 		case "2":
 			modifyPanel()
+		case "3":
+			autoInstall(DTWorker)
+		case "4":
+			autoInstall(DTPage)
 		}
 
 		res := promptUser("- Would you like to run the wizard again? (y/n): ", []string{"y", "n"})
@@ -486,9 +444,9 @@ func createPanel() {
 	for {
 		if response := promptUser("- Please enter custom Proxy IP/Domains or press ENTER to use default: ", nil); response != "" {
 			areValid := true
-			values := strings.SplitSeq(response, ",")
-			for v := range values {
-				trimmedValue := strings.TrimSpace(v)
+			values := strings.Split(response, ",")
+			for _, trimmedValue := range values {
+				trimmedValue = strings.TrimSpace(trimmedValue)
 				if !isValidIpDomain(trimmedValue) && !isValidHost(trimmedValue) {
 					areValid = false
 					message := fmt.Sprintf("%s is not a valid IP or Domain. Please try again.", trimmedValue)
@@ -511,9 +469,9 @@ func createPanel() {
 	for {
 		if response := promptUser("- Please enter custom NAT64 Prefixes or press ENTER to use default: ", nil); response != "" {
 			areValid := true
-			values := strings.SplitSeq(response, ",")
-			for v := range values {
-				trimmedValue := strings.TrimSpace(v)
+			values := strings.Split(response, ",")
+			for _, trimmedValue := range values {
+				trimmedValue = strings.TrimSpace(trimmedValue)
 				if !isValidIPv6(trimmedValue) {
 					areValid = false
 					message := fmt.Sprintf("%s is not a valid IPv6 address. Please try again.", trimmedValue)
@@ -733,4 +691,84 @@ func modifyPanel() {
 			break
 		}
 	}
+}
+
+func autoInstall(deployType DeployType) {
+	ctx := context.Background()
+	var err error
+	
+	if cfClient == nil || cfAccount == nil {
+		go login()
+		token := <-obtainedToken
+		cfClient = NewClient(token)
+		cfAccount, err = getAccount(ctx)
+		if err != nil {
+			failMessage("Failed to get Cloudflare account.")
+			log.Fatalln(err)
+		}
+	}
+
+	typeName := "Workers"
+	if deployType == DTPage {
+		typeName = "Pages"
+	}
+	fmt.Printf("\n%s Starting %s Auto Install...\n", title, typeName)
+
+	var projectName string
+	for {
+		projectName = generateRandomSubDomain(16)
+		var isAvailable bool
+		if deployType == DTWorker {
+			isAvailable = isWorkerAvailable(ctx, projectName)
+		} else {
+			isAvailable = isPagesProjectAvailable(ctx, projectName)
+		}
+		if isAvailable {
+			break
+		}
+	}
+	successMessage(fmt.Sprintf("Project Name: %s", projectName))
+
+	uid := uuid.NewString()
+	trPass := generateTrPassword(12)
+	proxyIP := ""      
+	nat64Prefix := ""  
+	fallback := ""     
+	subPath := generateSubURIPath(16)
+	customDomain := "" 
+
+	fmt.Printf("\n%s Creating KV namespace...\n", title)
+	now := time.Now().Format("2006-01-02_15-04-05")
+	kvName := fmt.Sprintf("kv-auto-%s", now)
+	kvNamespace, err = createKVNamespace(ctx, kvName)
+	if err != nil {
+		failMessage("Failed to create KV.")
+		return
+	}
+	successMessage("KV created.")
+
+	if err := downloadWorker(); err != nil {
+		failMessage("Failed to download worker.js")
+		return
+	}
+
+	fmt.Printf("\n%s Deploying %s project...\n", title, typeName)
+	var panel string
+	if deployType == DTWorker {
+		panel, err = deployWorker(ctx, projectName, uid, trPass, proxyIP, nat64Prefix, fallback, subPath, kvNamespace, customDomain)
+	} else {
+		panel, err = deployPagesProject(ctx, projectName, uid, trPass, proxyIP, nat64Prefix, fallback, subPath, kvNamespace, customDomain)
+	}
+	
+	if err != nil {
+		failMessage("Deployment failed.")
+		log.Println(err)
+		return
+	}
+
+	successMessage("Installation complete!")
+	fmt.Printf("\n%s Panel URL: %s\n", info, fmtStr(panel, BLUE, true))
+	fmt.Printf("%s UUID: %s\n", info, uid)
+	fmt.Printf("%s Password: %s\n", info, trPass)
+	fmt.Printf("%s Sub Path: %s\n", info, subPath)
 }
